@@ -1,0 +1,59 @@
+exec cp tip3ptinydrop.c tiny-tip4p-2.c
+set frag tiny-tip4p-2.c
+fragment $frag old persistent
+source ~/protocols-qm.mm/proclist.tcl
+
+# Setting rOM in Angstroms
+set rOMa .15
+set rOM [expr $rOMa/$bohrtoang]
+
+set numatoms [get_number_of_atoms coords=$frag]
+puts "numatoms is $numatoms"
+for { set i 1 }  { $i <= [expr $numatoms*4/3] } { incr i 1 } {
+    push_banner_flag 0
+    set elem [lindex [get_atom_entry coords=$frag atom_number=$i] 0]
+    if  {$elem == "O"} {
+        set currO [get_atom_entry coords=$frag atom_number=$i]
+        set currH1 [get_atom_entry coords=$frag atom_number=[expr $i+1]]
+        set currH2 [get_atom_entry coords=$frag atom_number=[expr $i+2]]
+# Setting the initial coordinates
+        set Oxinit [lindex $currO 1]
+        set Oyinit [lindex $currO 2]
+        set Ozinit [lindex $currO 3]
+        set H1xinit [lindex $currH1 1]
+        set H1yinit [lindex $currH1 2]
+        set H1zinit [lindex $currH1 3]
+        set H2xinit [lindex $currH2 1]
+        set H2yinit [lindex $currH2 2]
+        set H2zinit [lindex $currH2 3]
+# Setting all the coords with O at origin
+        set Ox [expr $Oxinit-$Oxinit]
+        set Oy [expr $Oyinit-$Oyinit]
+        set Oz [expr $Ozinit-$Ozinit]
+        set H1x [expr $H1xinit-$Oxinit]
+        set H1y [expr $H1yinit-$Oyinit]
+        set H1z [expr $H1zinit-$Ozinit]
+        set H2x [expr $H2xinit-$Oxinit]
+        set H2y [expr $H2yinit-$Oyinit]
+        set H2z [expr $H2zinit-$Ozinit]
+# Finding the midpoint Hm of H1 and H2
+        set Hmx [expr ($H1x+$H2x)/2]
+        set Hmy [expr ($H1y+$H2y)/2]
+        set Hmz [expr ($H1z+$H2z)/2]
+# Finding length from O to Hm
+        set rOHm [expr sqrt($Hmx**2+$Hmy**2+$Hmz**2)]
+# Finding the recalibrated M coords, then setting it back to the original coords
+        set currM {Bq}
+        lappend currM [expr ($Hmx*($rOM/$rOHm))+$Oxinit]
+        lappend currM [expr ($Hmy*($rOM/$rOHm))+$Oyinit]
+        lappend currM [expr ($Hmz*($rOM/$rOHm))+$Ozinit]
+# Adding the M particle to the water molecule
+        if {[expr $i+3]<[expr $numatoms*4/3]} {
+            add_atom_entry coords=$frag atom_entry= $currM atom_number=[expr $i+3]
+        } elseif {[expr $i+3]==[expr $numatoms*4/3]} {
+            add_atom_entry coords=$frag atom_entry= $currM
+        }
+    }
+    pop_banner_flag
+}
+times

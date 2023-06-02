@@ -1,0 +1,625 @@
+#######################################
+# MOLECULE-IN-SOLVENT SNAPSHOT PROTOCOL
+# RAGNAR BJORNSSON AND CODY STERLING
+# UNIVERSITY OF ICELAND 2014-2017
+#######################################
+
+# Set full path to main protocols directory
+set molsolventdir /users/home/cms3/git-blackbox-protocols
+
+##############################
+# Basic calculation parameters
+##############################
+
+# Calculation type
+# Options: 'redox', 'pka'
+## pKa is currently nonfunctional
+set calctype redox
+
+# Use polarization (Drude/EFP)
+# Options: 'yes', 'no'
+set usepol no
+
+# Choose code for QM calculations on gas phase and cluster snapshots
+# Options: 'orca', 'om3', 'pm3', 'xtb'
+## PM3 is a little buggy, especially with polarized calculations
+set gasqmtype gasorca
+set qmtype orca
+
+# Choose water model(s) for forcefield
+# mmodel defines all molecules that aren't QM or in polarized region (pmodel)
+# mmodel (non-polarized) options: 'spc', 'tip3p', 'tip4p'
+# pmodel (polarized) options: 'pspc', 'swm4dp', 'swm4ndp', 'swm6', 'efp'
+set mmodel tip3p
+set pmodel swm4dp
+
+# Set size of QM region (X angstrom from solute atom)
+set qmsolvradius 0
+# Set size of polarized region (X angstrom from QM atom)
+set polradius 100
+
+#########################
+# Gas-phase ORCA settings
+#########################
+# Used for high-level gas-phase calculations that gas-solvent redox shift is applied to
+
+# Setting level of theory
+set gasorcainput "! DLPNO-CCSD(T) RIJCOSX Extrapolate(2/3,def2) TIGHTSCF KDIIS SOSCF"
+
+# Block settings
+set gasorcablocks "
+%MaxCore 5000
+
+%scf
+MaxIter 1000
+end
+"
+
+#######################
+# Cluster ORCA settings
+#######################
+# Used for basic cluster calculations and finding gas-solvent redox shift
+ 
+# Setting level of theory
+set orcainput "! WB97X RIJCOSX def2-SVP def2/J Grid4 FinalGrid5 TIGHTSCF SLOWCONV"
+
+# Block settings
+set orcablocks "
+%scf
+MaxIter 1000
+end
+"
+
+#######################
+# Estimation parameters
+#######################
+# This is for estimating high-level energy effects, e.g. QM 0 -> QM 5 energies
+
+# Whether or not to do estimation
+# Options: 'yes', 'no'
+set useestim yes
+
+# How to choose representative snapshots
+# Options: 'num', 'numalt', 'cut'
+# num: Chooses X shapshots with energies closest to average
+# numalt: Chooses X closest snapshots but alternates greater/less than average
+# cut: Chooses all snapshots within X kcal/mol of average
+# "estimnum" should be value of X in above options
+set estimtype num
+set estimnum 5
+
+# Here set many parameters for how extrapolated clusters will be calculated
+# These variables take the same arguments as their above counterparts
+# Default: defined as original variables except with increased QM region
+set estimusepol $usepol
+
+set estimqmtype estimorca
+set estimmmodel $mmodel
+set estimpmodel $pmodel
+
+set estimqmsolvradius 5
+set estimpolradius $polradius
+
+# Here set high-level ORCA settings and blocks as above
+set estimorcainput "! WB97X RIJCOSX def2-SVP def2/J Grid4 FinalGrid5 TIGHTSCF SLOWCONV"
+set estimorcablocks "
+%scf
+MaxIter 1000
+end
+"
+# Defaults to use same settings as cluster ORCA but these can be commented out to use estim* settings
+#set estimorcainput $orcainput
+#set estimorcablocks $orcablocks
+
+# Here set polarizable MM correction settings
+set polmmqmtype polmmorca
+
+# ORCA settings and blocks
+set polmmorcainput "! HF MINIX"
+set polmmorcablocks "
+%scf
+MaxIter 1000
+end
+"
+
+##########################
+# Extrapolation paramaters
+##########################
+# This is for extrapolating solvation shell size effects, e.g. 33 A -> 19 A
+
+# Whether of not to do extrapolation
+# Options: 'yes', 'no'
+set useextrap yes
+
+# Set radius/i of cut system(s) in angstroms
+# Due to the way cutting works, this should be ~1.5 angstrom less than what you want to end up with
+# E.g. choose extrapradii = 18.5 to end up with a ~20 angstrom radius sphere
+set extrapradii {28 25}
+
+#####################
+# Advanced parameters
+#####################
+
+# Set QM/MM interactions, electrostatic or mechanical embedding
+# Options: 'shift' (electrostatic), 'mechanical'
+set coupling shift
+
+# Choose whether or not to calculate separate MM energy, cancels out with VIE/VEA calculations
+# Options: 'yes', 'no'
+set no_elec yes
+# Pairlist cutoff for MM electrostatic interactions (bohrs)
+set cutoff 1
+
+###############################
+# Running snapshot calculations
+###############################
+
+# Sourcing paths for codes (ORCA, Psi4, xTB, etc.)
+source $molsolventdir/paths.tcl
+
+# Sourcing edited interfaces for Chemshell
+source $molsolventdir/chemshint-orca.tcl
+source $molsolventdir/chemshint-psi4.tcl
+source $molsolventdir/chemshint-xtb.tcl
+
+# Sourcing various processes
+source $molsolventdir/proclist.tcl
+source $molsolventdir/snapprocs.tcl
+
+# Setting workgroup variables
+set nwg [nworkgroups]
+set wid [workgroupid]
+puts "There are $nwg workgroups, current wid is $wid"
+if {$nwg > 1} { 
+    set masterdir ..
+} elseif {$nwg == 1} {
+    set masterdir .
+}
+
+# Defining snapfolder location and setting MD variables
+set snapfolder $masterdir/snaps
+source $masterdir/md-variables.defs
+
+# Evenly dividing the list of snapshots into each task/core
+source $molsolventdir/snaplistgen.tcl
+set snapdictA [gensnaplist $snapshotsA $nwg $wid]
+set snapdictB [gensnaplist $snapshotsB $nwg $wid]
+
+# Making snapshot forcefield file
+source $molsolventdir/snapffgen.tcl
+
+# Making qm theory variables
+source $molsolventdir/qmtheory-snaps.tcl
+setqmtheory A
+setqmtheory B
+
+# Making calc-snaps directory to hold output files
+exec mkdir -p $masterdir/calc-snaps
+
+#####################################
+# Running high-level gas-phase energy
+#####################################
+
+# Only doing for the main (zeroth) workgroup, or in serial
+if { ! $wid } {
+    puts "Running high-level gas calcs with theory: $gasorcainput"
+    # Order of gassnap arguments: geometry, charge/mult type, type of theory
+    set gasAAen [gassnap A A $gasqmtype]
+    puts "gasAAen is $gasAAen Eh"
+    set gasBBen [gassnap B B $gasqmtype]
+    puts "gasBBen is $gasBBen Eh"
+    set gasABen [gassnap A B $gasqmtype]
+    puts "gasABen is $gasABen Eh"
+    set gasBAen [gassnap B A $gasqmtype]
+    puts "gasBAen is $gasBAen Eh"
+    # Making gas-phase therodynamic cycle information
+    set gasAIPev [expr ($gasABen - $gasAAen) * $ehtoev]
+    puts "High-level gasAIPev is $gasAIPev eV."
+    set gasBIPev [expr ($gasBBen - $gasBAen) * $ehtoev]
+    puts "High-level gasBIPev is $gasBIPev eV."
+    set gasAdIPev [expr ($gasBBen - $gasAAen) * $ehtoev]
+    puts "High-level gasAdIPev is $gasAdIPev eV."
+}
+
+#############################
+# Running full cluster energy
+#############################
+
+# First calculate gas energy using same theory as estimated (higher-level) cluster snapshots
+# Again, only do this for the main workgroup
+if { ! $wid } {
+    puts "Running cluster-level gas calcs with theory: $estimorcainput"
+    set clustgasAAen [gassnap A A $estimqmtype]
+    puts "clustgasAAen is $clustgasAAen Eh"
+    set clustgasBBen [gassnap B B $estimqmtype]
+    puts "clustgasBBen is $clustgasBBen Eh"
+    set clustgasABen [gassnap A B $estimqmtype]
+    puts "clustgasABen is $clustgasABen Eh"
+    set clustgasBAen [gassnap B A $estimqmtype]
+    puts "clustgasBAen is $clustgasBAen Eh"
+    # Making cluster-level gas-phase thermodynamic cycle information
+    set clustgasAIPev [expr ($clustgasABen - $clustgasAAen) * $ehtoev]
+    puts "Cluster-level clustgasAIPev is $clustgasAIPev eV."
+    set clustgasBIPev [expr ($clustgasBBen - $clustgasBAen) * $ehtoev]
+    puts "Cluster-level clustergasBIPev is $clustgasBIPev eV."
+    set clustgasAdIPev [expr ($clustgasBBen - $clustgasAAen) * $ehtoev]
+    puts "clustgasAdIPev is $clustgasAdIPev eV"
+}
+
+# Now calculate all the cluster energies according to each workgroup
+calcsnapsenergy A $snapdictA $snapfolder $qmtype $usepol $mmodel $pmodel $qmsolvradius $polradius
+calcsnapsenergy B $snapdictB $snapfolder $qmtype $usepol $mmodel $pmodel $qmsolvradius $polradius
+
+# Syncing workgroups after all snaps have run, ripping energy data from files into dict
+synch_workgroups
+
+# Combining all the data into master lists
+set AAvielist [dictolist [datastrip $masterdir/AAvie*.en]]
+puts "AAvielist in kcal/mol ([llength $AAvielist]) is $AAvielist"
+set ABvielist [dictolist [datastrip $masterdir/ABvie*.en]]
+puts "ABvielist in kcal/mol ([llength $ABvielist]) is $ABvielist"
+set IPlistA [dictolist [datastrip $masterdir/Aip*.en]]
+puts "IPlistA in kcal/mol ([llength $IPlistA]) is $IPlistA"
+set BAvielist [dictolist [datastrip $masterdir/BAvie*.en]]
+puts "BAvielist in kcal/mol ([llength $BAvielist]) is $BAvielist"
+set BBvielist [dictolist [datastrip $masterdir/BBvie*.en]]
+puts "BBvielist in kcal/mol ([llength $BBvielist]) is $BBvielist"
+set IPlistB [dictolist [datastrip $masterdir/Bip*.en]]
+puts "IPlistB in kcal/mol ([llength $IPlistB]) is $IPlistB"
+
+# Averaging A and B IPs for snapshot dictionary
+for {set i 0} {$i < [llength $IPlistA]} {incr i} {
+    lappend IPdictAB [expr $i+1] [expr ([lindex $IPlistA $i]+[lindex $IPlistB $i])/2.]
+}
+puts "IPdictAB in kcal/mol is $IPdictAB"
+set IPlistABev [listmult [dict values $IPdictAB] [expr pow($evtokcal,-1)]]
+set IPavgev [average $IPlistABev]
+set IPstdev [stdev $IPlistABev]
+puts "Average IP is $IPavgev eV +- $IPstdev"
+# Getting A and B information
+set IPlistAev [listmult $IPlistA [expr pow($evtokcal,-1)]]
+set AIPavgev [average $IPlistAev]
+set AIPstdev [stdev $IPlistAev]
+set IPlistBev [listmult $IPlistB [expr pow($evtokcal,-1)]]
+set BIPavgev [average $IPlistBev]
+set BIPstdev [stdev $IPlistBev]
+# Here have to delete objects so extrapolation/estimation can work properly between workgroups
+delete_all_objects
+
+# If extrapolation is on: cutting down snapshots to appropriate size and getting energies
+if { "$useextrap" == "yes" } {
+    # We do this for each size (because there might be more than one)
+    foreach i $extrapradii {
+        set newsnapfolder $masterdir/${i}snaps
+        # Making folder to host cut snapshots
+        exec mkdir -p $newsnapfolder
+        exec mkdir -p $masterdir/${i}calc-snaps
+        # Cutting clusters down to appropriate size
+        source $molsolventdir/extrapcut.tcl
+        clustercut [dict values $snapdictA] $snapfolder $newsnapfolder $i
+        clustercut [dict values $snapdictB] $snapfolder $newsnapfolder $i
+        synch_workgroups
+        # Calculating energies of cut clusters
+        calcsnapsenergy A $snapdictA $newsnapfolder $qmtype $usepol $mmodel $pmodel $qmsolvradius $polradius $i
+        calcsnapsenergy B $snapdictB $newsnapfolder $qmtype $usepol $mmodel $pmodel $qmsolvradius $polradius $i
+        synch_workgroups
+        delete_all_objects
+        # Get energies from appropriate output files
+        set ${i}AAvielist [dictolist [datastrip $masterdir/${i}AAvie*.en]]
+        puts "${i}AAvielist in kcal/mol ([llength [set ${i}AAvielist]]) is [set ${i}AAvielist]"
+        set ${i}ABvielist [dictolist [datastrip $masterdir/${i}ABvie*.en]]
+        puts "${i}ABvielist in kcal/mol ([llength [set ${i}ABvielist]]) is [set ${i}ABvielist]"
+        set ${i}IPlistA [dictolist [datastrip $masterdir/${i}Aip*.en]]
+        puts "${i}IPlistA in kcal/mol ([llength [set ${i}IPlistA]]) is [set ${i}IPlistA]"
+        set ${i}BAvielist [dictolist [datastrip $masterdir/${i}BAvie*.en]]
+        puts "${i}BAvielist in kcal/mol ([llength [set ${i}BAvielist]]) is [set ${i}BAvielist]"
+        set ${i}BBvielist [dictolist [datastrip $masterdir/${i}BBvie*.en]]
+        puts "${i}BBvielist in kcal/mol ([llength [set ${i}BBvielist]]) is [set ${i}BBvielist]"
+        set ${i}IPlistB [dictolist [datastrip $masterdir/${i}Bip*.en]]
+        puts "${i}IPlistB in kcal/mol ([llength [set ${i}IPlistB]]) is [set ${i}IPlistB]"
+        # Averaging A and B IPs for snapshot dictionary
+        for {set j 0} {$j < [llength [set ${i}IPlistA]]} {incr j} {
+            lappend ${i}IPdictAB [expr $j+1] [expr ([lindex [set ${i}IPlistA] $j]+[lindex [set ${i}IPlistB] $j])/2.]
+        }
+        puts "${i}IPdictAB in kcal/mol is [set ${i}IPdictAB]"
+        set IPlistABev [listmult [dict values [set ${i}IPdictAB]] [expr pow($evtokcal,-1)]]
+        set ${i}IPavgev [average $IPlistABev]
+        set ${i}IPstdev [stdev $IPlistABev]
+        puts "Average IP for $i is [set ${i}IPavgev] +- [set ${i}IPstdev] eV."
+        # Getting A and B information
+        set IPlistAev [listmult [set ${i}IPlistA] [expr pow($evtokcal,-1)]]
+        set ${i}AIPavgev [average $IPlistAev]
+        set ${i}AIPstdev [stdev $IPlistAev]
+        set IPlistBev [listmult [set ${i}IPlistB] [expr pow($evtokcal,-1)]]
+        set ${i}BIPavgev [average $IPlistBev]
+        set ${i}BIPstdev [stdev $IPlistBev]
+    }
+	
+	# Now we get size information from original radii and all sizes
+	if {! $wid} {
+		# First doing original clusters
+        push_banner_flag 0
+        foreach cluster [exec ls {*}[glob $snapfolder/snap*.c]] {
+            lappend origradii [expr [get_molecule_radius coords=$cluster]*$bohrtoang]
+        }
+        pop_banner_flag
+        set origradius [average $origradii]
+        lappend fitlist [expr 1/$origradius] $IPavgev
+        lappend fitlistA [expr 1/$origradius] $AIPavgev
+        lappend fitlistB [expr 1/$origradius] $BIPavgev
+        puts "Original radius is $origradius angstroms with stdev [stdev $origradii] angstroms"
+		
+		# Now doing all radii clusters
+		foreach j $extrapradii {
+			push_banner_flag 0
+			foreach cutcluster [exec ls {*}[glob $masterdir/${j}snaps/snap*.c]] {
+				lappend ${j}cutradii [expr [get_molecule_radius coords=$cutcluster]*$bohrtoang]
+			}
+			pop_banner_flag
+			set ${j}cutradius [average [set ${j}cutradii]]
+            lappend fitlist [expr 1/[set ${j}cutradius]] [set ${j}IPavgev]
+            lappend fitlistA [expr 1/[set ${j}cutradius]] [set ${j}AIPavgev]
+            lappend fitlistB [expr 1/[set ${j}cutradius]] [set ${j}BIPavgev]
+			puts "Cut radius for $j ([llength [set ${j}cutradii]]) is [set ${j}cutradius] angstroms with stdev [stdev [set ${j}cutradii]] angstroms"
+		}
+
+        # Now doing line of best fit
+        set fitdata [bestfitline $fitlist]
+        puts "Slope is [lindex $fitdata 0] eV/(A^-1)"
+        puts "Y-intercept is [lindex $fitdata 1] eV."
+        puts "R is [lindex $fitdata 2]"
+        puts "R2 is [expr pow([lindex $fitdata 2],2)]"
+        set bulkcorr [expr [lindex $fitdata 1] - $IPavgev]
+        puts "Bulk correction is $bulkcorr eV."
+        set fitdataA [bestfitline $fitlistA]
+        set bulkcorrA [expr [lindex $fitdataA 1] - $AIPavgev]
+        set fitdataB [bestfitline $fitlistB]
+        set bulkcorrB [expr [lindex $fitdataB 1] - $BIPavgev]
+    }
+}
+
+# If estimation is on: finding representative snapshots, then calculating energies
+if { "$useestim" == "yes" } {
+    # Making list of representative snapshots
+    source $molsolventdir/estimlistgen.tcl
+    set repsnaps [repsnaplist $estimtype $estimnum $snapslist $IPdictAB]
+    puts "Full repsnaps list is $repsnaps"
+    # Only do the following if there is right number of repsnaps
+    if {$wid < [llength $repsnaps]} {
+        # Applying that list evenly through all workgroups
+        set widreplist [gensnaplist $repsnaps $nwg $wid]
+        puts "widreplist is $widreplist"
+        # Turning snapshot numbers into actual filenames to be run
+        foreach letter {A B} {
+            dict for {key val} $widreplist {
+                dict append widreplist$letter $key snap${letter}-${val}.c
+            }
+        }
+        puts "widreplistA is $widreplistA"
+        puts "widreplistB is $widreplistB"
+        # Defining new name for estimated calculations as QM solv (default)
+        ## Maybe define this with rest of estimation parameters?
+        set arg QM${estimqmsolvradius}
+        exec mkdir -p $masterdir/${arg}calc-snaps
+        # Running energy calculations
+        calcsnapsenergy A $widreplistA $snapfolder $estimqmtype $estimusepol $estimmmodel $estimpmodel $estimqmsolvradius $estimpolradius $arg
+        calcsnapsenergy B $widreplistB $snapfolder $estimqmtype $estimusepol $estimmmodel $estimpmodel $estimqmsolvradius $estimpolradius $arg
+
+        # Now doing energy calculations for polarizable MM correction using estimated QM size
+        ## At some point need to add a flag to only do this (and print this) if polarization isn't already on
+        set polarg pol$arg
+        exec mkdir -p $masterdir/${polarg}-nocalc-snaps
+        exec mkdir -p $masterdir/${polarg}-yescalc-snaps
+        # First have to do it without polarization
+        calcsnapsenergy A $widreplistA $snapfolder $polmmqmtype no $estimmmodel $estimpmodel $estimqmsolvradius $estimpolradius $polarg-no
+        calcsnapsenergy B $widreplistB $snapfolder $polmmqmtype no $estimmmodel $estimpmodel $estimqmsolvradius $estimpolradius $polarg-no
+        # Now with polarization
+        calcsnapsenergy A $widreplistA $snapfolder $polmmqmtype yes $estimmmodel $estimpmodel $estimqmsolvradius $estimpolradius $polarg-yes
+        calcsnapsenergy B $widreplistB $snapfolder $polmmqmtype yes $estimmmodel $estimpmodel $estimqmsolvradius $estimpolradius $polarg-yes
+    }
+    synch_workgroups        
+
+    # Only main workgroup has to do the following data calculations:
+    if { ! $wid } {
+        # Collecting energies of new calculations
+        set ${arg}IPlistA [dictolist [datastrip $masterdir/${arg}Aip*.en]]
+        set ${arg}IPlistB [dictolist [datastrip $masterdir/${arg}Bip*.en]]
+        puts "${arg}IPlistA in kcal/mol is [set ${arg}IPlistA]"
+        puts "${arg}IPlistB in kcal/mol is [set ${arg}IPlistB]"
+        # Combining A and B lists to get actual IPs in eV
+        for {set i 0} {$i < [llength [set ${arg}IPlistA]]} {incr i} {
+            lappend ${arg}IPlistAB [expr ([lindex [set ${arg}IPlistA] $i]+[lindex [set ${arg}IPlistB] $i])/2.]
+        }
+        puts "${arg}IPlistAB in kcal/mol is [set ${arg}IPlistAB]"
+        # Getting average and stdev of new calculations
+        set ${arg}IPlistABev [listmult [set ${arg}IPlistAB] [expr pow($evtokcal,-1)]]
+        set ${arg}IPavgev [average [set ${arg}IPlistABev]]
+        set ${arg}IPstdev [stdev [set ${arg}IPlistABev]]
+        puts "Average IP for $arg is [set ${arg}IPavgev] +- [set ${arg}IPstdev] eV."
+        set estimcorr [expr [set ${arg}IPavgev] - $IPavgev]
+        puts "Estimation $arg correction is $estimcorr eV."
+        # Getting A and B information
+        set IPlistAev [listmult [set ${arg}IPlistA] [expr pow($evtokcal,-1)]]
+        set ${arg}AIPavgev [average $IPlistAev]
+        set ${arg}AIPstdev [stdev $IPlistAev]
+        set estimcorrA [expr [set ${arg}AIPavgev] - $AIPavgev]
+        set IPlistBev [listmult [set ${arg}IPlistB] [expr pow($evtokcal,-1)]]
+        set ${arg}BIPavgev [average $IPlistBev]
+        set ${arg}BIPstdev [stdev $IPlistBev]
+        set estimcorrB [expr [set ${arg}BIPavgev] - $BIPavgev]
+
+        # Doing same for polarizable MM correction
+        set ${polarg}-noIPlistA [dictolist [datastrip $masterdir/${polarg}-noAip*.en]]
+        set ${polarg}-noIPlistB [dictolist [datastrip $masterdir/${polarg}-noBip*.en]]
+        set ${polarg}-yesIPlistA [dictolist [datastrip $masterdir/${polarg}-yesAip*.en]]
+        set ${polarg}-yesIPlistB [dictolist [datastrip $masterdir/${polarg}-yesBip*.en]]
+        for {set i 0} {$i < [llength [set ${polarg}-noIPlistA]]} {incr i} {
+            lappend ${polarg}-noIPlistAB [expr ([lindex [set ${polarg}-noIPlistA] $i]+[lindex [set ${polarg}-noIPlistB] $i])/2.]
+        }
+        for {set i 0} {$i < [llength [set ${polarg}-yesIPlistA]]} {incr i} {
+            lappend ${polarg}-yesIPlistAB [expr ([lindex [set ${polarg}-yesIPlistA] $i]+[lindex [set ${polarg}-yesIPlistB] $i])/2.]
+        }
+        puts "${polarg}-noIPlistAB in kcal/mol is [set ${polarg}-noIPlistAB]"
+        puts "${polarg}-yesIPlistAB in kcal/mol is [set ${polarg}-yesIPlistAB]"
+        set ${polarg}-noIPlistABev [listmult [set ${polarg}-noIPlistAB] [expr pow($evtokcal,-1)]]
+        set ${polarg}-yesIPlistABev [listmult [set ${polarg}-yesIPlistAB] [expr pow($evtokcal,-1)]]
+        set ${polarg}-noIPavg [average [set ${polarg}-noIPlistABev]]
+        set ${polarg}-yesIPavg [average [set ${polarg}-yesIPlistABev]]
+        set ${polarg}-noIPstdev [stdev [set ${polarg}-noIPlistABev]]
+        set ${polarg}-yesIPstdev [stdev [set ${polarg}-yesIPlistABev]]
+        puts "${polarg}-noIPavg is [set ${polarg}-noIPavg] +- [set ${polarg}-noIPstdev] eV."
+        puts "${polarg}-yesIPavg is [set ${polarg}-yesIPavg] +- [set ${polarg}-yesIPstdev] eV."
+        set polmmcorr [expr [set ${polarg}-yesIPavg] - [set ${polarg}-noIPavg]]
+        puts "Polarizable $polarg correction is $polmmcorr eV."
+        # Getting A and B information
+        set ${polarg}-noIPlistAev [listmult [set ${polarg}-noIPlistA] [expr pow($evtokcal,-1)]]
+        set ${polarg}-yesIPlistAev [listmult [set ${polarg}-yesIPlistA] [expr pow($evtokcal,-1)]]
+        set ${polarg}-noAIPavg [average [set ${polarg}-noIPlistAev]]
+        set ${polarg}-yesAIPavg [average [set ${polarg}-yesIPlistAev]]
+        set ${polarg}-noAIPstdev [stdev [set ${polarg}-noIPlistAev]]
+        set ${polarg}-yesAIPstdev [stdev [set ${polarg}-yesIPlistAev]]
+        set polmmcorrA [expr [set ${polarg}-yesAIPavg] - [set ${polarg}-noAIPavg]]
+        set ${polarg}-noIPlistBev [listmult [set ${polarg}-noIPlistB] [expr pow($evtokcal,-1)]]
+        set ${polarg}-yesIPlistBev [listmult [set ${polarg}-yesIPlistB] [expr pow($evtokcal,-1)]]
+        set ${polarg}-noBIPavg [average [set ${polarg}-noIPlistBev]]
+        set ${polarg}-yesBIPavg [average [set ${polarg}-yesIPlistBev]]
+        set ${polarg}-noBIPstdev [stdev [set ${polarg}-noIPlistBev]]
+        set ${polarg}-yesBIPstdev [stdev [set ${polarg}-yesIPlistBev]]
+        set polmmcorrB [expr [set ${polarg}-yesBIPavg] - [set ${polarg}-noBIPavg]]
+    }
+}
+
+if {! $wid} {
+    # Here we make the same file for Excel ports as usual
+    set snapip [open $masterdir/excelport.txt w]
+    puts $snapip " Data A Runavg . Data B Runavg"
+    for {set i 1} {$i <= [llength $IPlistA]} {incr i} {
+        set index [expr $i-1]
+        set snapnum [expr 60000+$index*400]
+        set Aval [lindex $IPlistA $index]
+        lappend Alist $Aval
+        set Aavg [average $Alist]
+        set Bval [lindex $IPlistB $index]
+        lappend Blist $Bval
+        set Bavg [average $Blist]
+        puts $snapip "$snapnum $Aval $i $Aavg . $Bval $i $Bavg"
+    }
+    close $snapip
+    
+    # Here we make a new file with extrapolation/estimation data (if needed)
+    if {"$useextrap" == "yes" || "$useestim" == "yes"} {
+        set outfile [open $masterdir/output.txt w]
+        set corrections 0
+        # First we output original redox. pot. stuff and other radii information if applicable
+        puts $outfile "Basic cluster calculation QM code: $orcainput"
+        if {"$useextrap" == "yes"} {
+            puts $outfile "***Exact redox pot. with radius $origradius angstrom ([llength $snapslist] snaps) is $IPavgev +- $IPstdev eV."
+            foreach i $extrapradii {
+                puts $outfile "Exact redox pot. with radius [set ${i}cutradius] angstrom ([llength $snapslist] snaps) is [set ${i}IPavgev] +- [set ${i}IPstdev] eV."
+            }
+            puts $outfile "Line of best fit: slope = [lindex $fitdata 0], yint = [lindex $fitdata 1], r2 = [expr pow([lindex $fitdata 2],2)]"
+            puts $outfile "***Bulk solvation correction: $bulkcorr eV."
+            set corrections [expr $corrections + $bulkcorr]
+        } else {
+            puts $outfile "Exact redox pot. with original parameters ([llength $snapslist] snaps) is $IPavgev +- $IPstdev eV."
+        }
+        # Now we print data from higher-level calculation if applicable
+        if {"$useestim"=="yes"} {
+            puts $outfile "Higher-level cluster calculation QM code: $estimorcainput"
+            puts $outfile "Higher-level cluster redox pot. ([llength $repsnaps] snaps) is [set ${arg}IPavgev] +- [set ${arg}IPstdev] eV."
+            puts $outfile "*** High-level correction: $estimcorr eV."
+            puts $outfile "Polarizable cluster calculation QM code: $polmmorcainput"
+            puts $outfile "Non-pol redox pot. ([llength $repsnaps] snaps) is [set ${polarg}-noIPavg] +- [set ${polarg}-noIPstdev] eV, pol redox pot ([llength $repsnaps] snaps) is [set ${polarg}-yesIPavg] +- [set ${polarg}-yesIPstdev] eV."
+            puts $outfile "*** Polarizable MM correction: $polmmcorr eV."
+            set corrections [expr $corrections + $estimcorr + $polmmcorr]
+        }
+        # Now we print gas-solv shift and apply to high-level gas calculation
+        set IPavgcorr [expr $IPavgev + $corrections]
+        puts $outfile "*** Total corrections: $corrections eV."
+        puts $outfile "*** Corrected redox potential is $IPavgcorr eV."
+        puts $outfile "Cluster-level gas QM code: $estimorcainput"
+        puts $outfile "*** Cluster gas IP is $clustgasAdIPev eV."
+        set gassolv [expr $IPavgcorr - $clustgasAdIPev]
+        puts $outfile "Full gas-solv shift with corrections is $gassolv"
+        puts $outfile "High-level gas calculation QM code: $gasorcainput"
+        puts $outfile "High-level gas calculation gives IP of $gasAdIPev eV."
+        puts $outfile "Combining these gives high-level red. pot. of [expr $gasAdIPev+$gassolv] eV."
+        close $outfile
+
+        set outfile2 [open $masterdir/outputA.txt w]
+        set correctionsA 0
+        puts $outfile2 "A information:"
+        puts $outfile2 "Basic cluster calculation QM code: $orcainput"
+        if {"$useextrap" == "yes"} {
+            puts $outfile2 "***Exact redox pot. with radius $origradius angstrom is $AIPavgev +- $AIPstdev eV."
+            foreach i $extrapradii {
+                puts $outfile2 "Exact redox pot. with radius [set ${i}cutradius] angstrom is [set ${i}AIPavgev] +- [set ${i}AIPstdev] eV."
+            }
+            puts $outfile2 "Line of best fit: slope = [lindex $fitdataA 0], yint = [lindex $fitdataA 1], r2 = [expr pow([lindex $fitdataA 2],2)]"
+            puts $outfile2 "***Bulk solvation correction: $bulkcorrA eV."
+            set correctionsA [expr $correctionsA + $bulkcorrA]
+        } else {
+            puts $outfile2 "Exact redox pot. with original parameters is $AIPavgev +- $AIPstdev eV."
+        }
+        # Now we print data from higher-level calculation if applicable
+        if {"$useestim"=="yes"} {
+            puts $outfile2 "Higher-level cluster calculation QM code: $estimorcainput"
+            puts $outfile2 "Higher-level cluster redox pot. is [set ${arg}AIPavgev] +- [set ${arg}AIPstdev] eV."
+            puts $outfile2 "*** High-level correction: $estimcorrA eV."
+            puts $outfile2 "Polarizable cluster calculation QM code: $polmmorcainput"
+            puts $outfile2 "Non-pol redox pot ([llength $repsnaps] snaps) is [set ${polarg}-noAIPavg] +- [set ${polarg}-noAIPstdev] eV, pol redox pot ([llength $repsnaps] snaps) is [set ${polarg}-yesAIPavg] +- [set ${polarg}-yesAIPstdev] eV."
+            puts $outfile2 "*** Polarizable MM correction: $polmmcorrA eV."
+            set correctionsA [expr $correctionsA + $estimcorrA + $polmmcorrA]
+        }
+        # Now we print gas-solv shift and apply to high-level gas calculation
+        set IPavgcorrA [expr $AIPavgev + $correctionsA]
+        puts $outfile2 "*** Total corrections: $correctionsA eV."
+        puts $outfile2 "*** Corrected redox potential is $IPavgcorrA eV."
+        puts $outfile2 "Cluster-level gas QM code: $estimorcainput"
+        puts $outfile2 "*** Cluster gas IP is $clustgasAIPev eV."
+        set gassolvA [expr $IPavgcorrA - $clustgasAIPev]
+        puts $outfile2 "Full gas-solv shift with corrections is $gassolvA"
+        puts $outfile2 "High-level gas calculation QM code: $gasorcainput"
+        puts $outfile2 "High-level gas calculation gives IP of $gasAIPev eV."
+        puts $outfile2 "Combining these gives high-level red. pot. of [expr $gasAIPev+$gassolvA] eV."
+        close $outfile2
+
+        set outfile3 [open $masterdir/outputB.txt w]
+        set correctionsB 0
+        puts $outfile3 "B information:"
+        puts $outfile3 "Basic cluster calculation QM code: $orcainput"
+        if {"$useextrap" == "yes"} {
+            puts $outfile3 "***Exact redox pot. with radius $origradius angstrom is $BIPavgev +- $BIPstdev eV."
+            foreach i $extrapradii {
+                puts $outfile3 "Exact redox pot. with radius [set ${i}cutradius] angstrom is [set ${i}BIPavgev] +- [set ${i}BIPstdev] eV."
+            }
+            puts $outfile3 "Line of best fit: slope = [lindex $fitdataB 0], yint = [lindex $fitdataB 1], r2 = [expr pow([lindex $fitdataB 2],2)]"
+            puts $outfile3 "***Bulk solvation correction: $bulkcorrB eV."
+            set correctionsB [expr $correctionsB + $bulkcorrB]
+        } else {
+            puts $outfile3 "Exact redox pot. with original parameters is $BIPavgev +- $BIPstdev eV."
+        }
+        # Now we print data from higher-level calculation if applicable
+        if {"$useestim"=="yes"} {
+            puts $outfile3 "Higher-level cluster calculation QM code: $estimorcainput"
+            puts $outfile3 "Higher-level cluster redox pot. is [set ${arg}BIPavgev] +- [set ${arg}BIPstdev] eV."
+            puts $outfile3 "*** High-level correction: $estimcorrB eV."
+            puts $outfile3 "Polarizable cluster calculation QM code: $polmmorcainput"
+            puts $outfile3 "Non-pol redox pot ([llength $repsnaps] snaps) is [set ${polarg}-noBIPavg] +- [set ${polarg}-noBIPstdev] eV, pol redox pot ([llength $repsnaps] snaps) is [set ${polarg}-yesBIPavg] +- [set ${polarg}-yesBIPstdev] eV."
+            puts $outfile3 "*** Polarizable MM correction: $polmmcorrB eV."
+            set correctionsB [expr $correctionsB + $estimcorrB + $polmmcorrB]
+        }
+        # Now we print gas-solv shift and apply to high-level gas calculation
+        set IPavgcorrB [expr $BIPavgev + $correctionsB]
+        puts $outfile3 "*** Total corrections: $correctionsB eV."
+        puts $outfile3 "*** Corrected redox potential is $IPavgcorrB eV."
+        puts $outfile3 "Cluster-level gas QM code: $estimorcainput"
+        puts $outfile3 "*** Cluster gas IP is $clustgasBIPev eV."
+        set gassolvB [expr $IPavgcorrB - $clustgasBIPev]
+        puts $outfile3 "Full gas-solv shift with corrections is $gassolvB"
+        puts $outfile3 "High-level gas calculation QM code: $gasorcainput"
+        puts $outfile3 "High-level gas calculation gives IP of $gasBIPev eV."
+        puts $outfile3 "Combining these gives high-level red. pot. of [expr $gasBIPev+$gassolvB] eV."
+        close $outfile3
+    }
+}

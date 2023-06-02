@@ -1,0 +1,251 @@
+####################################
+# MOLECULE-IN-SOLVENT MD PROTOCOL
+# RAGNAR BJORNSSON AND CODY STERLING
+# UNIVERSITY OF ICELAND 2014-2017
+####################################
+
+# Set full path to main protocols directory
+set molsolventdir /users/home/cms3/blackbox-protocol
+
+#####################
+# Basic MD parameters
+#####################
+
+# Select type of dynamics
+# Options: 'qmmm' (QM/MM MD on sphere), 'permm' (periodic MM MD with a box)
+set dynamics qmmm
+
+# Select solvation system geometry, must match with dynamics
+## Currently redundant but allows more robustness in the future
+# Options: 'sphere', 'box'
+set solvgeom sphere
+
+# Select size of solvation sphere
+## Currently not used in 'box' solvgeom
+# Options: '9k', 'big', 'small', 'tiny'
+set solvsize big
+
+# Select water model
+## Eventually could make this work with other molecules
+## TIP4P nonfunctional
+# Options: 'spc', 'tip3p', 'tips3p', 'tip4p'
+set solvtype tip3p
+
+# Select code for various QM calculations
+# Options: 'orca', 'om3', 'pm3', 'xtb'
+# MNDO (OM3/PM3) can't do charges, ORCA can't do QM/MM dynamics
+set optcode xtb
+set chrgcode xtb
+set dyncode xtb
+
+# Select whether to pre-optimize solute molecules before starting MD
+# This runs at same level as 'optcode'
+# Options: 'yes', 'no'
+set preoptsolute no
+
+# Select forcefield for solute (LJ parameters)
+# Options: 'uff', 'charmm', 'opls'
+set solutetype opls
+# Scaling of r0 solvent-solute interaction for polar molecules in solute
+## Hopefully temporary fix; currently testing 1 (unscaled) or .97
+# List of polar atoms is defined in ffgen.tcl
+# Options: between 0 (no r0 interaction) and 1 (unscaled)
+set polarscale .97
+
+# Select length of simulation (fs)
+set nstep 100000
+
+# Select temperature of simulation (K)
+set mdtemp 300
+
+# Select basic snapshot parameters
+# Number of snapshots
+set numsnapshots 100
+# Range of steps to pick the snapshots from
+set rangebegin 60000
+set rangeend 100000
+
+####################
+# Solute information
+####################
+
+set molsysA molA.c
+set molsysB molB.c
+
+# Here we define charge, multiplicity, and .xyz geometries and types of states A and B
+# Solute types must be in same order as .xyz file
+# Solute types should be lowercase for UFF (e.g. {c h h h}) or using CHARMM types (e.g. {CG1T1 HGA1})
+# For solutetype 'opls', ignores solutetypesX variable and instead reads oplsX file to set types/ff
+# Snapshot energies are calculated going from A -> B (e.g., neutral A to oxidized or reduced B state)
+# In theory could add 'C' molecule (or more) but this requires heavy editing
+set chargeA 0
+set multA 1
+read_xyz coords=$molsysA file=ATOMNAME-neut.xyz
+set solutetypesA {CG2R61 CG2R61 CG2R61 HGR61 HGR61 CG2R61 CG2R61 HGR61 CG2R61 HGR61 HGR61 OG311 HGP1}
+set oplsfileA ATOMNAME.prm
+
+set chargeB 1
+set multB 2
+read_xyz coords=$molsysB file=ATOMNAME-ox.xyz
+set solutetypesB {CG2R61 CG2R61 CG2R61 HGR61 HGR61 CG2R61 CG2R61 HGR61 CG2R61 HGR61 HGR61 OG311 HGP1}
+set oplsfileB ATOMNAME.prm
+
+#####################
+# Solvent information
+#####################
+
+# Setting solvent variables: solvent system, point charges, LJ parameters, etc.
+source $molsolventdir/mdparam.tcl
+
+# Select size of spheres cut from the periodic system if using 'box' solvgeom
+# Uncomment only one to use:
+# This circumscribes the sphere around the initial box size
+set cutradius [get_molecule_radius coords=$solvent]
+# This inscribes the sphere inside the initial box size
+#set cutradius [expr [get_molecule_radius coords=$solvent]/sqrt(3)]
+# This sets the radius in bohr
+#set cutradius 60
+
+###############
+# ORCA settings
+###############
+
+# Setting level of theory in ORCA
+set orcainput "! WB97X cc-pVDZ def2/J Grid4 FinalGrid5 TIGHTSCF slowconv"
+
+# ORCA block settings
+set orcablocks "
+%scf
+MaxIter 1000
+end
+
+%pal
+nprocs 1
+end
+"
+
+########################
+# Advanced MD parameters
+########################
+
+# Select temperature gradients, sets tempx (K) at stepx (fs)
+# Default does an automatic gradient scale to final temperature
+# Example with 300K: 50K -> 100K -> 150K -> 225K -> 300K
+# To use no gradient, set all temps to $mdtemp
+set stepa 1; set tempa [expr $mdtemp/6]
+set stepb 250; set tempb [expr $mdtemp/3]
+set stepc 500; set tempc [expr $mdtemp/2]
+set stepd 1000; set tempd [expr $mdtemp*3/5]
+set stepe 2000; set tempe $mdtemp
+
+## This should just be a temporary addition to check electrostatic (QM) vs. mechanical (MM) embedding
+set coupling shift
+set noelec no
+set chrgscale 1.0
+
+# Select some dynamics parameters
+# Frequency (fs) to update pairlist
+set pairupd 5
+# Frequency (fs) to write to .trj file
+set writetra 1000
+# Frequency (fs) to write restart file
+set writerstrt 1000
+# Set random velocities: 'T', 'F'
+set mdrandomize T
+# Restarting run: 'T', 'F'
+set mdrestart F
+# Set simulation name
+set title simulation
+
+############################
+# Running MD simulation code
+############################
+
+# Sourcing paths for codes (ORCA, Psi4, xTB, etc.)
+source $molsolventdir/paths.tcl
+
+# Sourcing edited interfaces for Chemshell
+source $molsolventdir/chemshint-orca.tcl
+source $molsolventdir/chemshint-xtb.tcl
+
+# Sourcing various processes
+source $molsolventdir/proclist.tcl
+
+# Setting QM theory based on qmcode variable
+source $molsolventdir/qmtheory-md.tcl
+setqmtheory A
+setqmtheory B
+
+# Pre-optimizing solute if wanted
+if {$preoptsolute == "yes"} {
+    source $molsolventdir/preoptsolute.tcl
+    preopt A
+    preopt B
+}
+
+# Defining solvent variables
+fragment solvA.c persistent
+fragment solvB.c persistent
+set solvsysA solvA.c
+set solvsysB solvB.c
+
+# Have to redefine solutestypes if using OPLS LJ parameters
+if {$solutetype == "opls"} {
+    source $molsolventdir/oplstypes.tcl
+    setoplstypes A $oplsfileA
+    setoplstypes B $oplsfileB
+}
+puts "after solutetypesA is $solutetypesA"
+puts "after solutetypesB is $solutetypesB"
+
+# Inserting solute A and solute B into solvent system
+source $molsolventdir/insertsolute.tcl
+insertsolute A
+insertsolute B
+
+# Sets solvent charge parameters for different models, calculates solute/solvent LJ parameters
+source $molsolventdir/ffgen.tcl
+soluteffgen A
+soluteffgen B
+
+# Calculating CM5 charges for solute and adding water charges
+# These are only used with classical calculations (mech. embedding or MM MD)
+source $molsolventdir/atomchargecalc.tcl
+if {"$dynamics"=="permm" || "$coupling"=="mechanical"} {
+    puts "Doing periodic MD or using mechanical embedding, calculating charges:"
+    ${chrgcode}chrg A
+    ${chrgcode}chrg B
+} else {
+    # Otherwise have to do blank charges to let MD proc work properly
+    blankcharge A
+    blankcharge B
+}
+
+# Calculating step numbers for taking snapshots
+set snapslist [snaplist $numsnapshots $rangebegin $rangeend]
+puts "Snapshots to grab: $snapslist"
+
+# Running dynamics
+source $molsolventdir/dynprocs.tcl
+${dynamics}-md A
+${dynamics}-md B
+
+# Writing variables to file for use in snapshot calculations
+puts "Writing variables to md-variables.defs"
+set file2 [open md-variables.defs "w"]
+puts $file2 "set snapslist {$snapslist}"
+puts $file2 "set snapshotsA {$snapshotsA}"
+puts $file2 "set snapshotsB {$snapshotsB}"
+puts $file2 "set chargeA $chargeA"
+puts $file2 "set multA $multA"
+puts $file2 "set chargeB $chargeB"
+puts $file2 "set multB $multB"
+puts $file2 "set solvwitht {$solvwitht}"
+puts $file2 "set solutetypesA {$solutetypesA}"
+puts $file2 "set solutetypesB {$solutetypesB}"
+puts $file2 "set numatomsoluteA $numatomsoluteA"
+puts $file2 "set numatomsoluteB $numatomsoluteB"
+puts $file2 "set solvtype $solvtype"
+close $file2
+
+times
